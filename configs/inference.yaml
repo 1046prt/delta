@@ -1,0 +1,19 @@
+inference:
+  checkpoint: "outputs/checkpoints/best_model.pt"
+  input_size: 256
+  overlap: 32
+  threshold: 0.5
+  device: "auto"
+
+patna_aoi:
+  name: "Patna - Boring Road & Kurji"
+  bounds: [85.08, 25.57, 85.12, 25.62]  # [west, south, east, north]
+  epsg: 4326
+  t1_date: "2022-01-01"
+  t2_date: "2024-01-01"
+  max_cloud_cover: 10
+
+visualization:
+  overlay_opacity: 0.5
+  colormap: "hot"
+  dpi: 150
