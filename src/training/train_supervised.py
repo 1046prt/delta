@@ -84,7 +84,7 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(device_type=device.type, enabled=use_amp):
+        with autocast(enabled=use_amp):
             preds = model(images)
             loss = criterion(preds, masks)
 
