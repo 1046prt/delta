@@ -1,22 +1,16 @@
 experiment:
-  name: "oscd_unet_rgb_ndvi"
+  name: "siamese_unet_rgb"
   seed: 42
   device: "auto"
 
 data:
   root: "data/oscd100"
-  bands: ["B02", "B03", "B04", "B08"]  # RGB + NIR
-  patch_size: 256
-  batch_size: 8
-  num_workers: 2
-  use_ndvi: true
-  train_split: 0.7
-  val_split: 0.15
-  test_split: 0.15
+  batch_size: 4
+  num_workers: 0
 
 model:
   type: "siamese_unet"
-  in_channels: 4   # RGB + NDVI per date
+  in_channels: 3
   out_channels: 1
   features: [64, 128, 256, 512]
   use_attention: true
@@ -24,7 +18,7 @@ model:
 loss:
   type: "combined"
   alpha: 0.5
-  pos_weight: null  # auto-computed from class imbalance
+  pos_weight: null
   smooth: 1.0
 
 optimizer:
@@ -39,13 +33,9 @@ scheduler:
   min_lr: 0.00001
 
 training:
-  max_epochs: 100
-  early_stopping_patience: 15
+  max_epochs: 50
+  early_stopping_patience: 10
   grad_clip: 1.0
-  mixed_precision: true
+  mixed_precision: false
   checkpoint_dir: "outputs/checkpoints"
   log_dir: "outputs/metrics"
-
-evaluation:
-  thresholds: [0.3, 0.5, 0.7]
-  best_metric: "f1"

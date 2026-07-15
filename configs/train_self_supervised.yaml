@@ -1,23 +1,17 @@
 experiment:
-  name: "oscd_self_supervised"
+  name: "autoencoder_rgb"
   seed: 42
   device: "auto"
 
 data:
   root: "data/oscd100"
-  bands: ["B02", "B03", "B04", "B08"]
-  patch_size: 256
-  batch_size: 8
-  num_workers: 2
-  use_ndvi: true
+  batch_size: 4
+  num_workers: 0
 
 model:
   type: "autoencoder"
-  in_channels: 4
+  in_channels: 3
   features: [64, 128, 256, 512]
-
-loss:
-  type: "mse"
 
 optimizer:
   type: "adam"
@@ -31,14 +25,11 @@ scheduler:
   min_lr: 0.00001
 
 training:
-  max_epochs: 80
-  early_stopping_patience: 15
-  grad_clip: 1.0
-  mixed_precision: true
+  max_epochs: 50
+  early_stopping_patience: 10
+  mixed_precision: false
   checkpoint_dir: "outputs/checkpoints"
   log_dir: "outputs/metrics"
 
 inference:
   change_threshold: 0.15
-  gaussian_blur_sigma: 2.0
-  min_change_area: 50  # minimum connected component size in pixels

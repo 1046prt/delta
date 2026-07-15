@@ -5,15 +5,14 @@ import time
 import yaml
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data import DataLoader
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data.oscd_dataset import OSCDDataset
-from src.data.transforms import get_train_transforms, get_val_transforms
+from torchgeo.datasets import OSCD100
 from src.models.unet import Autoencoder
 from src.training.metrics import compute_iou, compute_f1
 
@@ -23,25 +22,35 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+class OSCDReconstruction(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        sample = self.dataset[idx]
+        image = sample["image"].float()
+        mask = sample["mask"].float()
+
+        if image.dim() == 4:
+            t1, t2 = image[0], image[1]
+        else:
+            t1 = t2 = image
+
+        return {"t1": t1, "t2": t2, "mask": mask}
+
+
 def build_dataloaders(config: dict):
     data_cfg = config["data"]
+    root = data_cfg["root"]
 
-    train_ds = OSCDDataset(
-        root=data_cfg["root"], split="train",
-        bands=data_cfg["bands"], patch_size=data_cfg["patch_size"],
-        use_ndvi=data_cfg.get("use_ndvi", True),
-        transforms=get_train_transforms(data_cfg["patch_size"]),
-    )
-    val_ds = OSCDDataset(
-        root=data_cfg["root"], split="train",
-        bands=data_cfg["bands"], patch_size=data_cfg["patch_size"],
-        use_ndvi=data_cfg.get("use_ndvi", True),
-        transforms=get_val_transforms(data_cfg["patch_size"]),
-    )
+    train_dataset = OSCD100(root=root, split="train", bands=OSCD100.rgb_bands, download=True)
+    val_dataset = OSCD100(root=root, split="val", bands=OSCD100.rgb_bands, download=True)
 
-    n_train = int(len(train_ds) * 0.85)
-    n_val = len(train_ds) - n_train
-    train_ds, val_ds = random_split(train_ds, [n_train, n_val])
+    train_ds = OSCDReconstruction(train_dataset)
+    val_ds = OSCDReconstruction(val_dataset)
 
     train_loader = DataLoader(
         train_ds, batch_size=data_cfg["batch_size"],
@@ -62,14 +71,12 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
     n_batches = 0
 
     for batch in tqdm(loader, desc="Train", leave=False):
-        images = batch["image"].to(device)
-
-        t1 = images[:, 0]
-        t2 = images[:, 1]
+        t1 = batch["t1"].to(device)
+        t2 = batch["t2"].to(device)
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=use_amp):
+        with autocast(device.type, enabled=use_amp):
             recon_t1 = model(t1)
             recon_t2 = model(t2)
             loss = criterion(recon_t1, t1) + criterion(recon_t2, t2)
@@ -100,21 +107,18 @@ def validate(model, loader, criterion, device, change_threshold=0.15):
     n_batches = 0
 
     for batch in tqdm(loader, desc="Val", leave=False):
-        images = batch["image"].to(device)
+        t1 = batch["t1"].to(device)
+        t2 = batch["t2"].to(device)
         masks = batch["mask"].to(device)
-
-        t1 = images[:, 0]
-        t2 = images[:, 1]
 
         recon_t1 = model(t1)
         recon_t2 = model(t2)
         loss = criterion(recon_t1, t1) + criterion(recon_t2, t2)
         total_loss += loss.item()
 
-        error_t1 = torch.mean((t1 - recon_t1) ** 2, dim=1, keepdim=True)
-        error_t2 = torch.mean((t2 - recon_t2) ** 2, dim=1, keepdim=True)
-        change_map = torch.abs(error_t1 - error_t2)
-
+        err_t1 = torch.mean((t1 - recon_t1) ** 2, dim=1, keepdim=True)
+        err_t2 = torch.mean((t2 - recon_t2) ** 2, dim=1, keepdim=True)
+        change_map = torch.abs(err_t1 - err_t2)
         change_pred = (change_map > change_threshold).float()
 
         total_f1 += compute_f1(change_pred, masks)
@@ -138,10 +142,10 @@ def train_self_supervised(config_path: str):
     torch.manual_seed(config["experiment"]["seed"])
     np.random.seed(config["experiment"]["seed"])
 
-    model_cfg = config["model"]
+    in_ch = len(OSCD100.rgb_bands)
     model = Autoencoder(
-        in_channels=model_cfg["in_channels"],
-        features=model_cfg["features"],
+        in_channels=in_ch,
+        features=config["model"]["features"],
     ).to(device)
 
     train_loader, val_loader = build_dataloaders(config)
@@ -179,6 +183,7 @@ def train_self_supervised(config_path: str):
     change_threshold = config["inference"]["change_threshold"]
 
     print(f"\nStarting self-supervised training: {exp_name}")
+    print(f"Input channels: {in_ch} (RGB)")
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}\n")
 
@@ -212,9 +217,16 @@ def train_self_supervised(config_path: str):
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
                 "best_loss": best_loss,
-                "config": config,
+                "config": {
+                    "model": {
+                        "type": "autoencoder",
+                        "in_channels": in_ch,
+                        "features": config["model"]["features"],
+                    },
+                    "data": {"bands": list(OSCD100.rgb_bands), "use_ndvi": False},
+                    "inference": {"change_threshold": change_threshold},
+                },
             }, ckpt_path)
             print(f"  -> Saved best model (Loss: {best_loss:.6f})")
         else:

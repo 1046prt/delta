@@ -5,16 +5,14 @@ import time
 import yaml
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data import DataLoader
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data.oscd_dataset import OSCDDataset
-from src.data.transforms import get_train_transforms, get_val_transforms
-from src.models.unet import UNet
+from torchgeo.datasets import OSCD100
 from src.models.siamese_unet import SiameseUNet
 from src.training.losses import CombinedLoss, compute_pos_weight
 from src.training.metrics import evaluate_all
@@ -25,40 +23,47 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_model(config: dict) -> nn.Module:
-    model_type = config["model"]["type"]
-    in_ch = config["model"]["in_channels"]
-    out_ch = config["model"]["out_channels"]
-    features = config["model"]["features"]
-    use_attn = config["model"].get("use_attention", False)
+class OSCDDatasetWrapper(torch.utils.data.Dataset):
+    def __init__(self, dataset, augment=False):
+        self.dataset = dataset
+        self.augment = augment
 
-    if model_type == "siamese_unet":
-        return SiameseUNet(in_ch, out_ch, features, use_attention=use_attn)
-    elif model_type == "unet":
-        return UNet(in_ch, out_ch, features, use_attention=use_attn)
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        sample = self.dataset[idx]
+        image = sample["image"].float()
+        mask = sample["mask"].float()
+
+        if image.dim() == 4:
+            t1, t2 = image[0], image[1]
+        else:
+            t1 = t2 = image
+
+        if self.augment:
+            if torch.rand(1).item() > 0.5:
+                t1 = torch.flip(t1, [-1])
+                t2 = torch.flip(t2, [-1])
+                mask = torch.flip(mask, [-1])
+            if torch.rand(1).item() > 0.5:
+                t1 = torch.flip(t1, [-2])
+                t2 = torch.flip(t2, [-2])
+                mask = torch.flip(mask, [-2])
+
+        image_stacked = torch.stack([t1, t2], dim=0)
+        return {"image": image_stacked, "mask": mask}
 
 
 def build_dataloaders(config: dict):
     data_cfg = config["data"]
+    root = data_cfg["root"]
 
-    train_ds = OSCDDataset(
-        root=data_cfg["root"], split="train",
-        bands=data_cfg["bands"], patch_size=data_cfg["patch_size"],
-        use_ndvi=data_cfg.get("use_ndvi", True),
-        transforms=get_train_transforms(data_cfg["patch_size"]),
-    )
-    val_ds = OSCDDataset(
-        root=data_cfg["root"], split="train",
-        bands=data_cfg["bands"], patch_size=data_cfg["patch_size"],
-        use_ndvi=data_cfg.get("use_ndvi", True),
-        transforms=get_val_transforms(data_cfg["patch_size"]),
-    )
+    train_dataset = OSCD100(root=root, split="train", bands=OSCD100.rgb_bands, download=True)
+    val_dataset = OSCD100(root=root, split="val", bands=OSCD100.rgb_bands, download=True)
 
-    n_train = int(len(train_ds) * 0.85)
-    n_val = len(train_ds) - n_train
-    train_ds, val_ds = random_split(train_ds, [n_train, n_val])
+    train_ds = OSCDDatasetWrapper(train_dataset, augment=True)
+    val_ds = OSCDDatasetWrapper(val_dataset, augment=False)
 
     train_loader = DataLoader(
         train_ds, batch_size=data_cfg["batch_size"],
@@ -84,7 +89,7 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=use_amp):
+        with autocast(device.type, enabled=use_amp):
             preds = model(images)
             loss = criterion(preds, masks)
 
@@ -145,7 +150,13 @@ def train(config_path: str):
     torch.manual_seed(config["experiment"]["seed"])
     np.random.seed(config["experiment"]["seed"])
 
-    model = build_model(config).to(device)
+    in_ch = len(OSCD100.rgb_bands)
+    model = SiameseUNet(
+        in_channels=in_ch, out_channels=1,
+        features=config["model"]["features"],
+        use_attention=config["model"].get("use_attention", False),
+    ).to(device)
+
     train_loader, val_loader = build_dataloaders(config)
 
     all_labels = []
@@ -190,6 +201,7 @@ def train(config_path: str):
     history = {"train_loss": [], "val_loss": [], "val_metrics": []}
 
     print(f"\nStarting training: {exp_name}")
+    print(f"Input channels: {in_ch} (RGB)")
     print(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}")
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}\n")
 
@@ -197,9 +209,9 @@ def train(config_path: str):
         t0 = time.time()
 
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, use_amp)
-        val_loss, val_metrics = validate(model, val_loader, criterion, device, config["evaluation"]["thresholds"])
+        val_loss, val_metrics = validate(model, val_loader, criterion, device, [0.3, 0.5, 0.7])
 
-        best_threshold = config["evaluation"]["thresholds"][0]
+        best_threshold = 0.3
         best_thresh_f1 = 0
         for t, metrics in val_metrics.items():
             if metrics["f1"] > best_thresh_f1:
@@ -230,16 +242,25 @@ def train(config_path: str):
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
                 "best_f1": best_f1,
-                "config": config,
+                "config": {
+                    "model": {
+                        "type": "siamese_unet",
+                        "in_channels": in_ch,
+                        "out_channels": 1,
+                        "features": config["model"]["features"],
+                        "use_attention": config["model"].get("use_attention", False),
+                    },
+                    "data": {"bands": list(OSCD100.rgb_bands), "use_ndvi": False},
+                    "inference": {"overlap": 32, "change_threshold": 0.5},
+                },
             }, ckpt_path)
             print(f"  -> Saved best model (F1: {best_f1:.4f})")
         else:
             patience_counter += 1
 
         if patience_counter >= train_cfg["early_stopping_patience"]:
-            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience_counter} epochs)")
+            print(f"\nEarly stopping at epoch {epoch+1}")
             break
 
     history_path = os.path.join(log_dir, f"{exp_name}_history.json")
