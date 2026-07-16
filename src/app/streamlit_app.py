@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.inference.predict import load_model, predict, predict_autoencoder, preprocess_pair
+from src.inference.predict import load_model, predict, predict_autoencoder
 from src.data.ndvi import compute_ndvi
 
 st.set_page_config(page_title="Satellite Change Detection", layout="wide")
@@ -59,24 +59,22 @@ if t1_file and t2_file:
             if os.path.exists(checkpoint_path):
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 model, config = load_model(checkpoint_path, device)
-                use_ndvi = config["data"].get("use_ndvi", True)
 
-                t1_tensor, t2_tensor, h, w = preprocess_pair(
-                    t1_file.name, t2_file.name,
-                    bands=config["data"]["bands"],
-                    use_ndvi=use_ndvi,
-                )
+                t1_tensor = torch.from_numpy(t1_img[:, :, :3].transpose(2, 0, 1)).unsqueeze(0).float()
+                t2_tensor = torch.from_numpy(t2_img[:, :, :3].transpose(2, 0, 1)).unsqueeze(0).float()
+
+                patch_size = config["data"].get("patch_size", 256)
 
                 if config["model"]["type"] == "autoencoder":
                     change_mask, change_map = predict_autoencoder(
                         model, t1_tensor, t2_tensor, device,
-                        change_threshold=config["inference"]["change_threshold"],
+                        change_threshold=config["inference"].get("change_threshold", 0.15),
                     )
                 else:
                     change_mask, change_map = predict(
                         model, t1_tensor, t2_tensor, device,
                         threshold=threshold,
-                        patch_size=config["data"]["patch_size"],
+                        patch_size=patch_size,
                     )
             else:
                 st.warning("No trained model found. Please train a model first.")
@@ -90,11 +88,11 @@ if t1_file and t2_file:
 
         with result_col1:
             st.markdown("**Before (T1)**")
-            st.image(t1_img.astype(np.uint8), use_container_width=True)
+            st.image(t1_img.astype(np.uint8), width='stretch')
 
         with result_col2:
             st.markdown("**After (T2)**")
-            st.image(t2_img.astype(np.uint8), use_container_width=True)
+            st.image(t2_img.astype(np.uint8), width='stretch')
 
         with result_col3:
             st.markdown("**Detected Changes**")
@@ -109,7 +107,7 @@ if t1_file and t2_file:
 
             change_rgb[change_mask_resized] = [255, 0, 0]
             blended = (overlay * (1 - overlay_opacity) + change_rgb * overlay_opacity).astype(np.uint8)
-            st.image(blended, use_container_width=True)
+            st.image(blended, width='stretch')
 
         st.markdown("---")
         stats_col1, stats_col2, stats_col3 = st.columns(3)
@@ -127,7 +125,7 @@ if t1_file and t2_file:
 
         st.markdown("---")
         st.markdown("### Change Probability Heatmap")
-        st.image(change_map, caption="Change probability (red = high, blue = low)", use_container_width=True)
+        st.image(change_map, caption="Change probability (red = high, blue = low)", width='stretch')
 
         if t1_img.shape[2] >= 4:
             st.markdown("---")
@@ -142,12 +140,12 @@ if t1_file and t2_file:
 
             ndvi_col1, ndvi_col2, ndvi_col3 = st.columns(3)
             with ndvi_col1:
-                st.image(ndvi_t1, caption="NDVI Before", use_container_width=True, clamp=True)
+                st.image(ndvi_t1, caption="NDVI Before", width='stretch', clamp=True)
             with ndvi_col2:
-                st.image(ndvi_t2, caption="NDVI After", use_container_width=True, clamp=True)
+                st.image(ndvi_t2, caption="NDVI After", width='stretch', clamp=True)
             with ndvi_col3:
                 ndvi_diff = ndvi_t2 - ndvi_t1
-                st.image(ndvi_diff, caption="NDVI Change", use_container_width=True, clamp=True)
+                st.image(ndvi_diff, caption="NDVI Change", width='stretch', clamp=True)
 
 else:
     st.info("Upload before (T1) and after (T2) satellite images to detect changes.")

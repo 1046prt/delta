@@ -1,6 +1,5 @@
 import os
 import sys
-import yaml
 import torch
 import numpy as np
 from PIL import Image
@@ -14,6 +13,7 @@ from src.data.ndvi import add_ndvi_channel_torch
 
 
 def load_model(checkpoint_path: str, device: torch.device):
+    """Load a trained model from checkpoint with its config."""
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint["config"]
 
@@ -45,6 +45,7 @@ def preprocess_pair(
     use_ndvi: bool = True,
     patch_size: int = 256,
 ):
+    """Load a pair of satellite images and prepare them as tensors for inference."""
     try:
         import rasterio
         with rasterio.open(t1_path) as src:
@@ -52,8 +53,18 @@ def preprocess_pair(
         with rasterio.open(t2_path) as src:
             t2 = src.read().astype(np.float32)
     except Exception:
-        t1 = np.array(Image.open(t1_path)).astype(np.float32).transpose(2, 0, 1)
-        t2 = np.array(Image.open(t2_path)).astype(np.float32).transpose(2, 0, 1)
+        t1 = np.array(Image.open(t1_path)).astype(np.float32)
+        t2 = np.array(Image.open(t2_path)).astype(np.float32)
+        if t1.ndim == 2:
+            t1 = np.stack([t1] * 3, axis=-1)
+        elif t1.shape[-1] == 4:
+            t1 = t1[:, :, :3]
+        if t2.ndim == 2:
+            t2 = np.stack([t2] * 3, axis=-1)
+        elif t2.shape[-1] == 4:
+            t2 = t2[:, :, :3]
+        t1 = t1.transpose(2, 0, 1)
+        t2 = t2.transpose(2, 0, 1)
 
     h = min(t1.shape[1], t2.shape[1])
     w = min(t1.shape[2], t2.shape[2])
@@ -82,6 +93,11 @@ def predict(
     patch_size: int = 256,
     overlap: int = 32,
 ) -> np.ndarray:
+    """Run sliding-window inference for a supervised change detection model.
+
+    Stacks T1 and T2 patches along channel dim, feeds to model, and averages
+    overlapping predictions.
+    """
     model.eval()
     _, c, h, w = t1_tensor.shape
 
@@ -116,6 +132,11 @@ def predict_autoencoder(
     device: torch.device,
     change_threshold: float = 0.15,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Run change detection using reconstruction error from an autoencoder.
+
+    Normalizes inputs to [0,1], reconstructs both dates, and computes
+    the absolute difference of per-pixel MSE errors.
+    """
     model.eval()
 
     t1 = t1_tensor.to(device) / 255.0
@@ -149,24 +170,26 @@ def predict_from_paths(
 
     model, config = load_model(checkpoint_path, device)
     model_type = config["model"]["type"]
-    use_ndvi = config["data"].get("use_ndvi", True)
+    use_ndvi = config["data"].get("use_ndvi", False)
 
     t1_tensor, t2_tensor, h, w = preprocess_pair(
         t1_path, t2_path,
-        bands=config["data"]["bands"],
+        bands=config["data"].get("bands", None),
         use_ndvi=use_ndvi,
     )
+
+    patch_size = config["data"].get("patch_size", 256)
 
     if model_type == "autoencoder":
         binary_mask, change_map = predict_autoencoder(
             model, t1_tensor, t2_tensor, device,
-            change_threshold=config["inference"]["change_threshold"],
+            change_threshold=config["inference"].get("change_threshold", 0.15),
         )
     else:
         binary_mask, change_map = predict(
             model, t1_tensor, t2_tensor, device,
             threshold=threshold,
-            patch_size=config["data"]["patch_size"],
+            patch_size=patch_size,
             overlap=config["inference"].get("overlap", 32),
         )
 
