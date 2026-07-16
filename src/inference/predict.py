@@ -118,8 +118,8 @@ def predict_autoencoder(
 ) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
 
-    t1 = t1_tensor.to(device)
-    t2 = t2_tensor.to(device)
+    t1 = t1_tensor.to(device) / 255.0
+    t2 = t2_tensor.to(device) / 255.0
 
     recon_t1 = model(t1)
     recon_t2 = model(t2)

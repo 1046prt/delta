@@ -18,8 +18,8 @@ st.sidebar.header("Configuration")
 
 MODEL_DIR = "outputs/checkpoints"
 MODEL_OPTIONS = {
-    "Siamese U-Net (Supervised)": "oscd_unet_rgb_ndvi_best.pt",
-    "Self-Supervised Autoencoder": "oscd_self_supervised_best.pt",
+    "Siamese U-Net (Supervised)": "siamese_unet_rgb_best.pt",
+    "Self-Supervised Autoencoder": "autoencoder_rgb_best.pt",
 }
 
 selected_model_name = st.sidebar.selectbox("Select Model", list(MODEL_OPTIONS.keys()))

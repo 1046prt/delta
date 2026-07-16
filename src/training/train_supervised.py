@@ -10,7 +10,7 @@ from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from torchgeo.datasets import OSCD100
 from src.models.siamese_unet import SiameseUNet

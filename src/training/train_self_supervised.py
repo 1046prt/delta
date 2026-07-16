@@ -10,7 +10,7 @@ from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from torchgeo.datasets import OSCD100
 from src.models.unet import Autoencoder
@@ -31,7 +31,7 @@ class OSCDReconstruction(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         sample = self.dataset[idx]
-        image = sample["image"].float()
+        image = sample["image"].float() / 255.0
         mask = sample["mask"].float()
 
         if image.dim() == 4:
