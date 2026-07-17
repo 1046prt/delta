@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 
@@ -26,16 +27,21 @@ def load_model(checkpoint_path: str, device: torch.device):
     if model_type == "siamese_unet":
         model = SiameseUNet(in_ch, out_ch, features, use_attention=use_attn)
     elif model_type == "unet":
-        model = UNet(in_ch, out_ch, features, use_attention=use_attn)
+        model = UNet(in_ch * 2, out_ch, features, use_attention=use_attn)
     elif model_type == "autoencoder":
         model = Autoencoder(in_ch, features)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    if "ema_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["ema_state_dict"])
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
-    return model, config
+
+    normalize = config.get("data", {}).get("normalize", False)
+    return model, config, normalize
 
 
 def preprocess_pair(
@@ -83,6 +89,10 @@ def preprocess_pair(
     return t1_tensor, t2_tensor, h, w
 
 
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
 @torch.no_grad()
 def predict(
     model,
@@ -92,14 +102,16 @@ def predict(
     threshold: float = 0.5,
     patch_size: int = 256,
     overlap: int = 32,
+    normalize: bool = False,
 ) -> np.ndarray:
-    """Run sliding-window inference for a supervised change detection model.
-
-    Stacks T1 and T2 patches along channel dim, feeds to model, and averages
-    overlapping predictions.
-    """
     model.eval()
     _, c, h, w = t1_tensor.shape
+
+    if normalize:
+        mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+        std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
+        t1_tensor = (t1_tensor / 255.0 - mean) / std
+        t2_tensor = (t2_tensor / 255.0 - mean) / std
 
     change_map = np.zeros((h, w), dtype=np.float32)
     count_map = np.zeros((h, w), dtype=np.float32)
@@ -139,11 +151,25 @@ def predict_autoencoder(
     """
     model.eval()
 
+    _, c, orig_h, orig_w = t1_tensor.shape
+    pad_h = (8 - orig_h % 8) % 8
+    pad_w = (8 - orig_w % 8) % 8
+
     t1 = t1_tensor.to(device) / 255.0
     t2 = t2_tensor.to(device) / 255.0
 
+    if pad_h > 0 or pad_w > 0:
+        t1 = F.pad(t1, (0, pad_w, 0, pad_h))
+        t2 = F.pad(t2, (0, pad_w, 0, pad_h))
+
     recon_t1 = model(t1)
     recon_t2 = model(t2)
+
+    if pad_h > 0 or pad_w > 0:
+        t1 = t1[:, :, :orig_h, :orig_w]
+        t2 = t2[:, :, :orig_h, :orig_w]
+        recon_t1 = recon_t1[:, :, :orig_h, :orig_w]
+        recon_t2 = recon_t2[:, :, :orig_h, :orig_w]
 
     error_t1 = torch.mean((t1 - recon_t1) ** 2, dim=1, keepdim=True)
     error_t2 = torch.mean((t2 - recon_t2) ** 2, dim=1, keepdim=True)
@@ -168,7 +194,7 @@ def predict_from_paths(
     else:
         device = torch.device(device_str)
 
-    model, config = load_model(checkpoint_path, device)
+    model, config, normalize = load_model(checkpoint_path, device)
     model_type = config["model"]["type"]
     use_ndvi = config["data"].get("use_ndvi", False)
 
@@ -191,6 +217,7 @@ def predict_from_paths(
             threshold=threshold,
             patch_size=patch_size,
             overlap=config["inference"].get("overlap", 32),
+            normalize=normalize,
         )
 
     if output_path:

@@ -75,7 +75,7 @@ def main():
             images = batch["image"].to(device)
             masks = batch["mask"]
             stacked = torch.cat([images[:, 0], images[:, 1]], dim=1)
-            pred_sup = torch.sigmoid(model_sup(stacked))
+            pred_sup = model_sup(stacked)
             all_preds_sup.append(pred_sup.cpu())
             all_masks.append(masks)
             all_t2.append(batch["t2"])

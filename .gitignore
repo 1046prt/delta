@@ -38,8 +38,20 @@ outputs/checkpoints/*.ckpt
 Thumbs.db
 desktop.ini
 
-# Outputs (keep structure, ignore generated files)
-outputs/figures/*.png
-outputs/figures/*.jpg
-outputs/metrics/*.json
-outputs/metrics/*.csv
+# Outputs (generated, not tracked)
+outputs/
+!outputs/checkpoints/
+!outputs/checkpoints/.gitkeep
+
+# Paper (entire folder — scripts, figures, LaTeX, everything)
+paper/
+
+# Paper-related root scripts
+scripts/plot_architecture.py
+scripts/plot_qualitative.py
+scripts/plot_gradcam.py
+scripts/paper_tables.py
+scripts/evaluate_full.py
+
+# Paper working docs
+PAPER_TODO.md
