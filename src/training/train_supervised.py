@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from torchgeo.datasets import OSCD100
 from src.models.siamese_unet import SiameseUNet
 from src.models.unet import UNet
+from src.models.fc_siam_diff import FCSiamDiff
+from src.models.tinycd import TinyCD
 from src.training.losses import FocalDiceLoss, FocalTverskyLoss, BoundaryLoss, compute_pos_weight
 from src.training.metrics import evaluate_all
 
@@ -227,6 +229,14 @@ def train(config_path: str):
             features=config["model"]["features"],
             use_attention=config["model"].get("use_attention", False),
         ).to(device)
+    elif model_type == "fc_siam_diff":
+        model = FCSiamDiff(
+            in_channels=in_ch, out_channels=1,
+        ).to(device)
+    elif model_type == "tinycd":
+        model = TinyCD(
+            in_channels=in_ch, out_channels=1,
+        ).to(device)
     else:
         model = SiameseUNet(
             in_channels=in_ch, out_channels=1,
@@ -371,7 +381,7 @@ def train(config_path: str):
                         "type": model_type,
                         "in_channels": in_ch,
                         "out_channels": 1,
-                        "features": config["model"]["features"],
+                        "features": config["model"].get("features", [64, 128, 256, 512]),
                         "use_attention": config["model"].get("use_attention", False),
                     },
                     "data": {"bands": list(OSCD100.rgb_bands), "use_ndvi": False, "normalize": config["data"].get("normalize", False)},

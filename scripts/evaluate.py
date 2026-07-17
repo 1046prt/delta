@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -9,9 +10,12 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.models.siamese_unet import SiameseUNet
-from src.models.unet import Autoencoder
-from src.training.metrics import evaluate_all, compute_f1, compute_iou
+from src.inference.predict import load_model
+from src.training.metrics import evaluate_all
+
+
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
 
 class OSCDRGB(torch.utils.data.Dataset):
@@ -30,32 +34,35 @@ class OSCDRGB(torch.utils.data.Dataset):
         return {"image": torch.stack([t1, t2], dim=0), "mask": mask, "t1": t1, "t2": t2}
 
 
-def load_supervised(path, device):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    cfg = ckpt["config"]
-    model = SiameseUNet(
-        in_channels=cfg["model"]["in_channels"],
-        out_channels=cfg["model"].get("out_channels", 1),
-        features=cfg["model"]["features"],
-        use_attention=cfg["model"].get("use_attention", False),
-    )
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.to(device).eval()
-    return model
+@torch.no_grad()
+def get_logits(model, t1, t2, model_type, normalize=False):
+    if normalize:
+        t1 = (t1 / 255.0 - IMAGENET_MEAN.to(t1.device)) / IMAGENET_STD.to(t1.device)
+        t2 = (t2 / 255.0 - IMAGENET_MEAN.to(t2.device)) / IMAGENET_STD.to(t2.device)
 
-
-def load_autoencoder(path, device):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    cfg = ckpt["config"]
-    model = Autoencoder(in_channels=cfg["model"]["in_channels"], features=cfg["model"]["features"])
-    model.load_state_dict(ckpt["model_state_dict"])
-    model.to(device).eval()
-    return model
+    if model_type == "autoencoder":
+        recon_t1 = model(t1)
+        recon_t2 = model(t2)
+        err_t1 = torch.mean((t1 - recon_t1) ** 2, dim=1, keepdim=True)
+        err_t2 = torch.mean((t2 - recon_t2) ** 2, dim=1, keepdim=True)
+        return torch.abs(err_t1 - err_t2).squeeze(1)
+    else:
+        stacked = torch.cat([t1, t2], dim=1)
+        return model(stacked).squeeze(1)
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default="outputs/checkpoints/siamese_unet_rgb_best.pt")
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+
+    model, config, normalize = load_model(args.model, device)
+    model_type = config["model"]["type"]
+    params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {model_type} ({params:,} params)")
 
     data_root = "data/oscd100"
     val_dataset = OSCD100(root=data_root, split="val", bands=OSCD100.rgb_bands, download=True)
@@ -63,27 +70,24 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=4, shuffle=False, num_workers=0)
     print(f"Val samples: {len(val_ds)}")
 
-    model_sup = load_supervised("outputs/checkpoints/siamese_unet_rgb_best.pt", device)
-    print(f"Supervised params: {sum(p.numel() for p in model_sup.parameters()):,}")
-
-    all_preds_sup = []
+    all_logits = []
     all_masks = []
-    all_t2 = []
 
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Evaluating"):
             images = batch["image"].to(device)
-            masks = batch["mask"]
-            stacked = torch.cat([images[:, 0], images[:, 1]], dim=1)
-            pred_sup = model_sup(stacked)
-            all_preds_sup.append(pred_sup.cpu())
-            all_masks.append(masks)
-            all_t2.append(batch["t2"])
+            masks = batch["mask"].to(device)
+            t1 = images[:, 0]
+            t2 = images[:, 1]
 
-    all_preds_sup = torch.cat(all_preds_sup)
+            logits = get_logits(model, t1, t2, model_type, normalize=normalize)
+            all_logits.append(logits.cpu())
+            all_masks.append(masks.squeeze(1).cpu())
+
+    all_logits = torch.cat(all_logits)
     all_masks = torch.cat(all_masks)
 
-    print(f"\nPredictions: {all_preds_sup.shape}, Masks: {all_masks.shape}")
+    print(f"\nLogits: {all_logits.shape}, Masks: {all_masks.shape}")
     print(f"\n{'Threshold':<12} {'F1':>8} {'IoU':>8} {'Precision':>10} {'Recall':>8}")
     print("-" * 50)
 
@@ -91,7 +95,7 @@ def main():
     best_thresh = 0.5
     results = {}
     for thresh in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]:
-        m = evaluate_all(all_preds_sup, all_masks, threshold=thresh)
+        m = evaluate_all(all_logits, all_masks, threshold=thresh)
         results[thresh] = m
         print(f"{thresh:<12.1f} {m['f1']:>8.4f} {m['iou']:>8.4f} {m['precision']:>10.4f} {m['recall']:>8.4f}")
         if m["f1"] > best_f1:
@@ -101,15 +105,20 @@ def main():
     print(f"\nBest: F1={best_f1:.4f} @ threshold={best_thresh}")
 
     best = results[best_thresh]
-    print(f"\nBest metrics: F1={best['f1']:.4f}, IoU={best['iou']:.4f}, Precision={best['precision']:.4f}, Recall={best['recall']:.4f}")
+    print(f"Best metrics: F1={best['f1']:.4f}, IoU={best['iou']:.4f}, Precision={best['precision']:.4f}, Recall={best['recall']:.4f}")
 
-    with open("outputs/metrics/evaluation_results.json", "w") as f:
+    out_path = args.model.replace("checkpoints", "metrics").replace(".pt", "_eval.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w") as f:
         json.dump({
+            "model": model_type,
+            "model_path": args.model,
+            "params": params,
             "best_threshold": best_thresh,
             "best_metrics": best,
             "all_results": {str(k): v for k, v in results.items()},
         }, f, indent=2)
-    print("\nResults saved to outputs/metrics/evaluation_results.json")
+    print(f"Results saved to {out_path}")
 
 
 if __name__ == "__main__":

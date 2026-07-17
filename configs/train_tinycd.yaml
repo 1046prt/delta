@@ -1,0 +1,44 @@
+experiment:
+  name: "tinycd"
+  seed: 42
+  device: "auto"
+
+data:
+  root: "data/oscd100"
+  batch_size: 4
+  num_workers: 0
+  normalize: true
+
+model:
+  type: "tinycd"
+  in_channels: 3
+  out_channels: 1
+
+loss:
+  type: "focal_dice"
+  focal_alpha: 0.75
+  focal_gamma: 2.0
+  alpha: 0.6
+
+optimizer:
+  type: "adamw"
+  lr: 0.0005
+  weight_decay: 0.0001
+
+scheduler:
+  type: "cosine"
+  T_0: 10
+  T_mult: 2
+  min_lr: 0.00001
+
+ema:
+  enabled: false
+  decay: 0.999
+
+training:
+  max_epochs: 80
+  early_stopping_patience: 20
+  grad_clip: 1.0
+  mixed_precision: false
+  checkpoint_dir: "outputs/checkpoints"
+  log_dir: "outputs/metrics"

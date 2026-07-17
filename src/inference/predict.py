@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.models.unet import UNet
 from src.models.siamese_unet import SiameseUNet
+from src.models.fc_siam_diff import FCSiamDiff
+from src.models.tinycd import TinyCD
 from src.models.unet import Autoencoder
 from src.data.ndvi import add_ndvi_channel_torch
 
@@ -28,6 +30,10 @@ def load_model(checkpoint_path: str, device: torch.device):
         model = SiameseUNet(in_ch, out_ch, features, use_attention=use_attn)
     elif model_type == "unet":
         model = UNet(in_ch * 2, out_ch, features, use_attention=use_attn)
+    elif model_type == "fc_siam_diff":
+        model = FCSiamDiff(in_ch, out_ch)
+    elif model_type == "tinycd":
+        model = TinyCD(in_ch, out_ch)
     elif model_type == "autoencoder":
         model = Autoencoder(in_ch, features)
     else:

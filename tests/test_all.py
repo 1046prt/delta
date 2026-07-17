@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.data.ndvi import compute_ndvi, compute_ndwi, compute_ndvi_torch, add_ndvi_channel_torch
 from src.models.unet import UNet, Autoencoder
 from src.models.siamese_unet import SiameseUNet
+from src.models.fc_siam_diff import FCSiamDiff
+from src.models.tinycd import TinyCD
 from src.training.losses import CombinedLoss, DiceLoss, compute_pos_weight
 from src.training.metrics import compute_iou, compute_f1, compute_precision, compute_recall
 
@@ -94,6 +96,40 @@ class TestModels:
         x = torch.rand(2, 4, 64, 64)
         out = model(x)
         assert out.min() >= 0.0 and out.max() <= 1.0
+
+    def test_fc_siam_diff_forward(self):
+        model = FCSiamDiff(in_channels=3, out_channels=1)
+        x = torch.randn(2, 6, 64, 64)
+        out = model(x)
+        assert out.shape == (2, 1, 64, 64)
+
+    def test_fc_siam_diff_5d(self):
+        model = FCSiamDiff(in_channels=3, out_channels=1)
+        x = torch.randn(2, 2, 3, 64, 64)
+        out = model(x)
+        assert out.shape == (2, 1, 64, 64)
+
+    def test_tinycd_forward(self):
+        model = TinyCD(in_channels=3, out_channels=1)
+        x = torch.randn(2, 6, 64, 64)
+        out = model(x)
+        assert out.shape == (2, 1, 64, 64)
+
+    def test_tinycd_5d(self):
+        model = TinyCD(in_channels=3, out_channels=1)
+        x = torch.randn(2, 2, 3, 64, 64)
+        out = model(x)
+        assert out.shape == (2, 1, 64, 64)
+
+    def test_fc_siam_diff_params(self):
+        model = FCSiamDiff(in_channels=3, out_channels=1)
+        params = sum(p.numel() for p in model.parameters())
+        assert params < 5_000_000  # Should be ~2M
+
+    def test_tinycd_params(self):
+        model = TinyCD(in_channels=3, out_channels=1)
+        params = sum(p.numel() for p in model.parameters())
+        assert params < 5_000_000  # Should be ~1M
 
 
 class TestLosses:
